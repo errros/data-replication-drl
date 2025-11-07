@@ -250,7 +250,9 @@ class SimPyGymBridge:
     def __init__(self, env: simpy.Environment, topology: nx.Graph,
                  instance_manager, latency_cache,
                  replication_model: str = "leader-follower",
-                 enable_consistency: bool = True):
+                 enable_consistency: bool = True,
+                 max_consumptions:Optional[int] = None
+                ):
         self.env = env
         self.topology = topology
         self.instance_manager = instance_manager
@@ -268,6 +270,8 @@ class SimPyGymBridge:
         self.generation_log: List[GenerationEvent] = []
         self.consumption_log: List[ConsumptionEvent] = []
 
+        self.max_consumptions = max_consumptions
+        self.total_consumptions = 0  # Track consumption count
         self.next_data_id = 1
 
         self._start_processes()
@@ -288,8 +292,7 @@ class SimPyGymBridge:
 
             data_id = f"data_{self.next_data_id}"
             self.next_data_id += 1
-            if self.env.now % 10 == 0:
-                print(f"Generating at t = {self.env.now}")
+
 
             data = DataItem(
                 data_id=data_id,
@@ -330,9 +333,11 @@ class SimPyGymBridge:
     def _consumer_process(self, instance: Dict):
         """Consumer process - allows early reads"""
         while True:
+
+            # Check if we've reached consumption limit
+            if self.max_consumptions is not None and self.total_consumptions >= self.max_consumptions:
+                break
             yield self.env.timeout(instance['consumption_rate'])
-            if self.env.now % 10 == 0:
-                print(f"Consuming at t = {self.env.now}")
             for gen_id in instance['connected_generators']:
                 latest_data = self.catalogue.get_latest_from_generator(gen_id)
 
@@ -344,6 +349,9 @@ class SimPyGymBridge:
                     )
 
                     if latency is not None and latency < float('inf'):
+                        # Increment consumption counter
+                        self.total_consumptions += 1
+                        # print(f"CONS N={self.total_consumptions}")
                         # Track read freshness
                         num_available = len(latest_data.replicas)
                         num_target = latest_data.target_replicas
@@ -374,6 +382,9 @@ class SimPyGymBridge:
                             num_replicas_target=num_target,
                             early_read=early_read
                         ))
+
+                        if self.max_consumptions is not None and self.total_consumptions >= self.max_consumptions:
+                            break
 
     def _consume_data(self, consumer_instance: Dict, data: DataItem):
         """Read from replicas - reads whatever is available"""

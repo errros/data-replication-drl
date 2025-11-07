@@ -238,6 +238,219 @@ class PCenterPlacementStrategy(PlacementStrategy):
 
         return list(best_replicas) if best_replicas else []
 
+class iFogStorPPlacementStrategy(PlacementStrategy):
+    """
+    iFogStorP: Optimized placement using P-median on shortest path nodes
+    Selects optimal number of replicas between p_min and p_max
+    """
+
+    def __init__(self, p_min: int = 3, p_max: int = 6):
+        self.p_min = p_min
+        self.p_max = p_max
+
+    def get_name(self) -> str:
+        return f"ifogstorp_{self.p_min}_{self.p_max}"
+
+    def place(
+            self,
+            data_id: str,
+            data_item: Dict,
+            context: PlacementContext
+    ) -> List[int]:
+        generator_instance_id = data_item["generator_instance"]
+        generator_node = data_item["generator_node"]
+        data_size_gb = data_item["size_gb"]
+
+        # Get connected consumers
+        generator_instance = context.instance_manager.get_instance(generator_instance_id)
+        connected_consumers = generator_instance["connected_consumers"]
+
+        if not connected_consumers:
+            # Fallback to random if no consumers
+            fallback = RandomReplicaPlacementStrategy(self.p_min)
+            return fallback.place(data_id, data_item, context)
+
+        # Get consumer nodes
+        consumer_nodes = []
+        for consumer_instance_id in connected_consumers:
+            consumer_instance = context.instance_manager.get_instance(consumer_instance_id)
+            consumer_nodes.append(consumer_instance["node_id"])
+
+        # Step 1: Find all shortest path nodes between producer and consumers
+        shortest_path_nodes = self._get_shortest_path_nodes(
+            generator_node, consumer_nodes, context
+        )
+
+        # Filter to only storage nodes with space
+        available_nodes = [
+            n for n in shortest_path_nodes
+            if n in context.storage_usage and context.has_storage_space(n, data_size_gb)
+        ]
+
+        if not available_nodes:
+            return []
+
+        # Step 2: For each P, find P-medians and estimate cost
+        best_p = self.p_min
+        best_nodes = []
+        best_cost = float('inf')
+
+        for p in range(self.p_min, self.p_max + 1):
+            if p > len(available_nodes):
+                break
+
+            # Find P-medians from available nodes
+            p_medians = self._find_p_medians(
+                available_nodes,
+                consumer_nodes,
+                p,
+                context.latency_cache
+            )
+
+            if not p_medians:
+                continue
+
+            # Estimate cost (write + read latency)
+            cost = self._estimate_placement_cost(
+                generator_node,
+                p_medians,
+                consumer_nodes,
+                context.latency_cache
+            )
+
+            if cost < best_cost:
+                best_cost = cost
+                best_p = p
+                best_nodes = p_medians
+
+        return best_nodes
+
+    def _get_shortest_path_nodes(
+            self,
+            producer: int,
+            consumers: List[int],
+            context: PlacementContext
+    ) -> List[int]:
+        """Get all nodes on shortest paths between producer and consumers"""
+        import networkx as nx
+
+        all_nodes = set()
+
+        # Add producer
+        all_nodes.add(producer)
+
+        # Add all consumers
+        all_nodes.update(consumers)
+
+        # Find shortest path nodes for each consumer
+        for consumer in consumers:
+            try:
+                path = nx.shortest_path(
+                    context.topology,
+                    producer,
+                    consumer,
+                    weight='latency'
+                )
+                all_nodes.update(path)
+            except nx.NetworkXNoPath:
+                continue
+
+        return list(all_nodes)
+
+    def _find_p_medians(
+            self,
+            candidate_nodes: List[int],
+            consumer_nodes: List[int],
+            p: int,
+            latency_cache: ShortestPathCache
+    ) -> List[int]:
+        """
+        Find P-median nodes from candidates that minimize total distance to consumers
+        Uses greedy approximation for efficiency
+        """
+        if p >= len(candidate_nodes):
+            return candidate_nodes[:p]
+
+        # Greedy P-median approximation
+        selected = []
+        remaining = candidate_nodes.copy()
+
+        # Start with node closest to all consumers
+        min_total_dist = float('inf')
+        best_first = None
+
+        for node in remaining:
+            total_dist = sum(
+                latency_cache.get_latency(node, consumer)
+                for consumer in consumer_nodes
+            )
+            if total_dist < min_total_dist:
+                min_total_dist = total_dist
+                best_first = node
+
+        if best_first is not None:
+            selected.append(best_first)
+            remaining.remove(best_first)
+
+        # Greedily add remaining medians
+        while len(selected) < p and remaining:
+            best_node = None
+            best_improvement = float('inf')
+
+            for candidate in remaining:
+                # Calculate total cost if we add this candidate
+                total_cost = 0
+                for consumer in consumer_nodes:
+                    # Distance to nearest selected node (including candidate)
+                    min_dist = min(
+                        latency_cache.get_latency(consumer, median)
+                        for median in selected + [candidate]
+                    )
+                    total_cost += min_dist
+
+                if total_cost < best_improvement:
+                    best_improvement = total_cost
+                    best_node = candidate
+
+            if best_node is not None:
+                selected.append(best_node)
+                remaining.remove(best_node)
+            else:
+                break
+
+        return selected
+
+    def _estimate_placement_cost(
+            self,
+            producer: int,
+            replicas: List[int],
+            consumers: List[int],
+            latency_cache: ShortestPathCache
+    ) -> float:
+        """
+        Estimate total cost of placement:
+        - Write cost: max latency from producer to replicas (strong consistency)
+        - Read cost: sum of min latencies from consumers to nearest replica
+        """
+        # Write cost: maximum latency to any replica
+        write_cost = max(
+            latency_cache.get_latency(producer, replica)
+            for replica in replicas
+        )
+
+        # Read cost: sum of minimum latencies
+        read_cost = sum(
+            min(
+                latency_cache.get_latency(consumer, replica)
+                for replica in replicas
+            )
+            for consumer in consumers
+        )
+
+        # Weighted combination (can be tuned)
+        return write_cost + read_cost
+
+
 
 # Factory function for easy strategy creation
 def create_placement_strategy(strategy_type: str, **kwargs) -> PlacementStrategy:
@@ -245,8 +458,8 @@ def create_placement_strategy(strategy_type: str, **kwargs) -> PlacementStrategy
     Factory function to create placement strategies
 
     Args:
-        strategy_type: One of 'local', 'random', 'p_center', 'latency_aware', 'hierarchical'
-        **kwargs: Additional parameters (e.g., num_replicas=3)
+        strategy_type: One of 'local', 'random', 'p_center', 'ifogstorp'
+        **kwargs: Additional parameters (e.g., num_replicas=3, p_min=3, p_max=6)
 
     Returns:
         PlacementStrategy instance
@@ -255,8 +468,7 @@ def create_placement_strategy(strategy_type: str, **kwargs) -> PlacementStrategy
         'local': LocalPlacementStrategy,
         'random': RandomReplicaPlacementStrategy,
         'p_center': PCenterPlacementStrategy,
-        'latency_aware': LatencyAwarePlacementStrategy,
-        'hierarchical': HierarchicalPlacementStrategy
+        'ifogstorp': iFogStorPPlacementStrategy
     }
 
     if strategy_type not in strategies:
@@ -265,11 +477,13 @@ def create_placement_strategy(strategy_type: str, **kwargs) -> PlacementStrategy
 
     strategy_class = strategies[strategy_type]
 
-    # Local strategy doesn't take num_replicas
+    # Local strategy doesn't take parameters
     if strategy_type == 'local':
         return strategy_class()
-    elif strategy_type == 'hierarchical':
-        return strategy_class()
+    elif strategy_type == 'ifogstorp':
+        p_min = kwargs.get('p_min', 3)
+        p_max = kwargs.get('p_max', 6)
+        return strategy_class(p_min=p_min, p_max=p_max)
     else:
         num_replicas = kwargs.get('num_replicas', 3)
         return strategy_class(num_replicas=num_replicas)
