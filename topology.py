@@ -11,9 +11,9 @@ import matplotlib.pyplot as plt
 args = {
     "random_state": 56,
 
-    "num_fogs": 4,
-    "num_edges": 14,
-    "terminals_per_edge_interval": [10, 30],
+    "num_fogs": 9,
+    "num_edges": 46,
+    "terminals_per_edge_interval": [100, 500],
 
     # Storage capacities (GB)
     "cloud_storage_interval": [10000, 50000],
@@ -23,17 +23,17 @@ args = {
     # Link bandwidths (Mbps)
     "bandwidth_cloud_fog_interval": [1000, 10000],
     "bandwidth_fog_edge_interval": [500, 1000],
-    "bandwidth_edge_terminal_interval": [100, 1000],
+    "bandwidth_edge_terminal_interval": [10, 100],
 
     # Latencies (ms)
-    "latency_cloud_fog_interval": [5, 10],
-    "latency_fog_edge_interval": [5, 20],
+    "latency_cloud_fog_interval": [10, 20],
+    "latency_fog_edge_interval": [10, 20],
     "latency_edge_terminal_interval": [1, 5],
 
     # Congestion sensitivity
-    "congestion_sensitivity_cloud_interval": [0.05, 0.1],
-    "congestion_sensitivity_fog_interval": [0.1, 0.2],
-    "congestion_sensitivity_edge_interval": [0.2, 0.4],
+    "congestion_sensitivity_cloud_interval": [0.1, 0.2],
+    "congestion_sensitivity_fog_interval": [0.2, 0.4],
+    "congestion_sensitivity_edge_interval": [0.4, 0.6],
 
     # Producers
     "generator_apps": [
@@ -50,16 +50,16 @@ args = {
             "consistency": 0,
             "generation_rate_interval": [10, 30],
             "generated_size_interval": [0.0001, 0.001],
-            "terminals_deployment_share": 0.1,
+            "terminals_deployment_share": 0.01,
             "storage_nodes_deployment_share": 0.0
         },
         {
             "name": "iot_telemetry",
-            "consistency": 0,
+            "consistency": 1,
             "generation_rate_interval": [120, 300],
             "generated_size_interval": [0.00001, 0.0001],
             "terminals_deployment_share": 0,
-            "storage_nodes_deployment_share": 0.15
+            "storage_nodes_deployment_share": 0.25
         }
     ],
     # Consumers
@@ -68,26 +68,26 @@ args = {
         {
             "name": "video_analytics",
             "consistency": 1,
-            "consumption_rate_interval": [120, 300],
+            "consumption_rate_interval": [80, 100],
             "slo": 10,
-            "terminals_deployment_share": 0.0,
-            "storage_nodes_deployment_share": 0.2
+            "terminals_deployment_share": 0.001,
+            "storage_nodes_deployment_share": 0.3
         },
         {
             "name": "batch_processing",
             "consistency": 1,
-            "consumption_rate_interval": [300, 400],
+            "consumption_rate_interval": [200, 400],
             "slo": 10,
-            "terminals_deployment_share": 0.0,
-            "storage_nodes_deployment_share": 0.1
+            "terminals_deployment_share": 0.005,
+            "storage_nodes_deployment_share": 0.01
         },
         {
             "name": "real_time_monitor",
-            "consistency": 0,
-            "consumption_rate_interval": [500, 700],
+            "consistency": 1,
+            "consumption_rate_interval": [300, 500],
             "slo": 50,
-            "terminals_deployment_share": 0.1,
-            "storage_nodes_deployment_share": 0.1
+            "terminals_deployment_share": 0.01,
+            "storage_nodes_deployment_share": 0.01
         }
     ]
 
